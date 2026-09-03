@@ -13,73 +13,90 @@ from app import log
 urllib3.disable_warnings()
 
 
-def solve_cap_challenge(login_url: str) -> str:
+def solve_cap_challenge(login_url: str, max_retries: int = 2) -> str:
     """
     使用 Playwright 模拟浏览器自动完成 Cap.js 验证并返回 cap_token
+    支持重试机制，提高成功率
     """
-    try:
-        from playwright.sync_api import sync_playwright
-        
-        log.info(f'使用 Playwright 访问登录页面：{login_url}')
-        
-        with sync_playwright() as p:
-            # 启动无头浏览器
-            browser = p.chromium.launch(headless=True)
-            page = browser.new_page()
+    for attempt in range(max_retries + 1):
+        try:
+            from playwright.sync_api import sync_playwright
             
-            # 访问登录页面
-            page.goto(login_url)
+            if attempt > 0:
+                log.info(f'第 {attempt + 1} 次重试 Cap.js 验证...')
             
-            # 等待 Cap.js widget 加载
-            log.info('等待 Cap.js widget 加载...')
-            page.wait_for_selector('cap-widget', timeout=10000)
+            log.info(f'使用 Playwright 访问登录页面：{login_url}')
             
-            # 等待 Cap.js 完成验证（最多等待 30 秒）
-            log.info('等待 Cap.js 自动完成验证...')
-            
-            # 监听 Cap.js 的 solve 事件，获取 cap_token
-            cap_token = None
-            
-            def handle_solve(event):
-                nonlocal cap_token
-                cap_token = event.detail.get('token', '')
-                log.info(f'Cap.js 验证完成，获取到 cap_token')
-            
-            # 注入脚本来监听 Cap.js 事件
-            page.evaluate('''() => {
-                const widget = document.querySelector('cap-widget');
-                if (widget) {
-                    widget.addEventListener('solve', (e) => {
-                        window.capToken = e.detail.token;
-                    });
-                }
-            }''')
-            
-            # 等待 cap_token 被设置
-            for i in range(30):  # 最多等待 30 秒
-                cap_token = page.evaluate('() => window.capToken')
+            with sync_playwright() as p:
+                # 启动无头浏览器
+                browser = p.chromium.launch(headless=True)
+                page = browser.new_page()
+                
+                # 访问登录页面
+                page.goto(login_url)
+                
+                # 等待 Cap.js widget 加载
+                log.info('等待 Cap.js widget 加载...')
+                page.wait_for_selector('cap-widget', timeout=10000)
+                
+                # 等待 Cap.js 完成验证（最多等待 60 秒）
+                log.info('等待 Cap.js 自动完成验证...')
+                
+                # 监听 Cap.js 的 solve 事件，获取 cap_token
+                cap_token = None
+                
+                def handle_solve(event):
+                    nonlocal cap_token
+                    cap_token = event.detail.get('token', '')
+                    log.info(f'Cap.js 验证完成，获取到 cap_token')
+                
+                # 注入脚本来监听 Cap.js 事件
+                page.evaluate('''() => {
+                    const widget = document.querySelector('cap-widget');
+                    if (widget) {
+                        widget.addEventListener('solve', (e) => {
+                            window.capToken = e.detail.token;
+                        });
+                    }
+                }''')
+                
+                # 等待 cap_token 被设置
+                for i in range(60):  # 最多等待 60 秒
+                    cap_token = page.evaluate('() => window.capToken')
+                    if cap_token:
+                        break
+                    import time
+                    time.sleep(1)
+                
+                browser.close()
+                
                 if cap_token:
-                    break
+                    log.info(f'成功获取 cap_token: {cap_token[:20]}...')
+                    return cap_token
+                else:
+                    log.warning('Cap.js 验证超时，未能获取 cap_token')
+                    if attempt < max_retries:
+                        log.info(f'将在 3 秒后进行第 {attempt + 2} 次重试...')
+                        import time
+                        time.sleep(3)
+                    continue
+            
+        except ImportError:
+            log.warning('playwright 未安装，无法使用浏览器自动求解 Cap.js')
+            return ''
+        except Exception as e:
+            log.warning(f'Playwright 自动求解 Cap.js 异常：{e}')
+            import traceback
+            log.warning(traceback.format_exc())
+            if attempt < max_retries:
+                log.info(f'将在 3 秒后进行第 {attempt + 2} 次重试...')
                 import time
-                time.sleep(1)
-            
-            browser.close()
-            
-            if cap_token:
-                log.info(f'成功获取 cap_token: {cap_token[:20]}...')
-                return cap_token
-            else:
-                log.warning('Cap.js 验证超时，未能获取 cap_token')
-                return ''
-            
-    except ImportError:
-        log.warning('playwright 未安装，无法使用浏览器自动求解 Cap.js')
-        return ''
-    except Exception as e:
-        log.warning(f'Playwright 自动求解 Cap.js 异常：{e}')
-        import traceback
-        log.warning(traceback.format_exc())
-        return ''
+                time.sleep(3)
+                continue
+            return ''
+    
+    log.warning(f'经过 {max_retries + 1} 次尝试，Cap.js 验证均失败')
+    return ''
 
 
 class Action:
